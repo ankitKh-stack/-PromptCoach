@@ -4,10 +4,11 @@ import re
 from coach.config import path
 
 PROMPT_FILES = {
-    "questions": "questions.v1.md",
-    "final_prompt": "final_prompt.v1.md",
+    "judge": "judge.v1.md",
+    "questions": "questions.v3.md",
+    "final_prompt": "final_prompt.v2.md",
     "checklist": "checklist.v1.md",
-    "revise": "revise.v1.md",
+    "revise": "revise.v2.md",
 }
 
 

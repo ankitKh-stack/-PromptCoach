@@ -42,13 +42,26 @@ Every call is validated with Pydantic. On empty, truncated or invalid output the
 with the error included, then shows a clear message. Rate limits, server errors and timeouts are
 retried with exponential backoff (`request` in `config.yaml`).
 
+## How many questions are asked
+
+At the start of each session, one small call (`prompts/judge.v1.md`) decides whether the rough
+prompt is already detailed: does it state at least 4 of goal, audience, material, format and
+constraints? The score is not part of this judgement.
+
+- **Vague rough prompt:** the interview must reach the score's minimum (`min_questions`). If the
+  model tries to stop early, the code asks it once more for deeper questions.
+- **Detailed rough prompt:** the interview stops as soon as nothing left would change the final
+  prompt, even below the minimum.
+- **Either way:** it never goes over `max_questions`.
+
 ## What you can tune without touching code
 
 - `config.yaml` — models, max tokens, score bands (question ranges, features, slider descriptions),
   target AIs, banned-pattern lists, batch size, long-input warning.
 - `knowledge/prompting_rules.md` — the rules included in every prompt-writing and checking call.
-- `prompts/*.v1.md` — the app's system prompts. To change one, copy it to `.v2.md` and update
-  `PROMPT_FILES` in `coach/prompts_loader.py`; logs record which file was used.
+- `prompts/*.vN.md` — the app's system prompts. To change one, copy it to the next version and
+  update `PROMPT_FILES` in `coach/prompts_loader.py`; logs record which file was used. Older
+  versions are kept for comparison.
 
 ## Layout
 

@@ -31,7 +31,7 @@ class Question(BaseModel):
     text: str = Field(min_length=3, max_length=300)
     type: Literal["single", "multi", "text"]
     options: list[str]
-    example: str
+    example: str = ""  # only a hint in the UI; DeepSeek sometimes leaves it out
 
     @model_validator(mode="after")
     def options_match_type(self):
@@ -44,14 +44,19 @@ class Question(BaseModel):
 
 
 class QuestionBatch(BaseModel):
+    open_gaps: list[str]
     questions: list[Question]
-    done: bool
-    done_reason: str
+    # DeepSeek JSON mode sometimes drops these trailing fields; the engine also decides
+    # from open_gaps and the budget, so a safe default is fine here.
+    done: bool = False
+    done_reason: str = ""
 
 
 QUESTION_BATCH_SCHEMA = {
     "type": "object",
     "properties": {
+        # Listed first so the model names the gaps before writing questions.
+        "open_gaps": {"type": "array", "items": {"type": "string"}},
         "questions": {
             "type": "array",
             "items": {
@@ -70,7 +75,25 @@ QUESTION_BATCH_SCHEMA = {
         "done": {"type": "boolean"},
         "done_reason": {"type": "string"},
     },
-    "required": ["questions", "done", "done_reason"],
+    "required": ["open_gaps", "questions", "done", "done_reason"],
+    "additionalProperties": False,
+}
+
+
+# ---------- rough-prompt judgement ----------
+
+class RoughJudgement(BaseModel):
+    stated: list[str]
+    detailed: bool
+
+
+ROUGH_JUDGEMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "stated": {"type": "array", "items": {"type": "string"}},
+        "detailed": {"type": "boolean"},
+    },
+    "required": ["stated", "detailed"],
     "additionalProperties": False,
 }
 
@@ -90,7 +113,7 @@ class FinalPrompt(BaseModel):
 FINAL_PROMPT_SCHEMA = {
     "type": "object",
     "properties": {
-        "final_prompt": {"type": "string"},
+        # additions first: it is short, and writing it after a long prompt made DeepSeek drop it.
         "additions": {
             "type": "array",
             "items": {
@@ -100,8 +123,9 @@ FINAL_PROMPT_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "final_prompt": {"type": "string"},
     },
-    "required": ["final_prompt", "additions"],
+    "required": ["additions", "final_prompt"],
     "additionalProperties": False,
 }
 

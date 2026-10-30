@@ -56,6 +56,8 @@ def run_one(provider_name, case, score):
         record.update(ok=False, qa=[], result=None, error=str(exc))
     record.update(seconds=round(time.time() - started, 1), usage=coach.usage_totals(),
                   validation_retries=sum(1 for c in coach.calls if not c["ok"]),
+                  rough_detailed=next((c["rough_prompt_detailed"] for c in coach.calls
+                                       if "rough_prompt_detailed" in c), None),
                   model=coach.provider.model)
     return record
 
@@ -72,6 +74,10 @@ def check(record, case):
     low = band["min_questions"] if (case["vague"] or record["score"] == 1) else 0
     checks["question_count"] = (low <= n <= band["max_questions"],
                                 f"{n} asked (allowed {low}-{band['max_questions']})")
+    if case.get("decent") and record["score"] == 10:
+        # An already-decent rough prompt should not use the whole score-10 budget.
+        # (At lower scores the small budget can legitimately be filled.)
+        checks["stops_early"] = (n < band["max_questions"], f"{n} asked of max {band['max_questions']}")
     found = lint(record["result"]["final_prompt"], target_for(case["target"])["reasoning"])
     banned = found["caps"] + found["pressure"] + found["step_by_step"]
     checks["no_banned_patterns"] = (not banned, ", ".join(banned) or "none")
@@ -140,13 +146,14 @@ def main():
                 failed += not ok
                 length_rows.append((p, c["id"], l5, l10, ok))
 
-    print(f"{'provider':9} {'case':20} {'sc':>2} {'qs':>3} {'chars':>6} {'in_tok':>7} {'out_tok':>7} "
+    print(f"{'provider':9} {'case':20} {'sc':>2} {'qs':>3} {'rough':>5} {'chars':>6} {'in_tok':>7} {'out_tok':>7} "
           f"{'secs':>5}  checks")
     for r in sorted(rows, key=lambda r: (r["provider"], r["case"], r["score"])):
         chars = len(r["result"]["final_prompt"]) if r["ok"] else 0
+        rough = {True: "det", False: "vague", None: "-"}[r["rough_detailed"]]
         marks = " ".join(f"{'OK ' if c['pass'] else 'FAIL '}{k}" + ("" if c["pass"] else f" [{c['detail']}]")
                          for k, c in r["checks"].items())
-        print(f"{r['provider']:9} {r['case']:20} {r['score']:>2} {len(r['qa']):>3} {chars:>6} "
+        print(f"{r['provider']:9} {r['case']:20} {r['score']:>2} {len(r['qa']):>3} {rough:>5} {chars:>6} "
               f"{r['usage']['input_tokens']:>7} {r['usage']['output_tokens']:>7} {r['seconds']:>5}  {marks}")
     if length_rows:
         print("\nScore 10 longer than score 5:")

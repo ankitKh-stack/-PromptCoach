@@ -2,6 +2,7 @@
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import date
 
 from pydantic import BaseModel, ValidationError
@@ -11,9 +12,17 @@ from coach.config import band_for, features_for, load_config, target_for
 from coach.prompts_loader import interview_text, prompt_version, settings_block, system_prompt, tag
 from coach.providers import CoachError, EmptyOrTruncated, Provider
 from coach.schemas import (CHECKLIST_ITEMS, CHECKLIST_SCHEMA, FINAL_PROMPT_SCHEMA, QUESTION_BATCH_SCHEMA,
-                           Checklist, FinalPrompt, QuestionBatch)
+                           ROUGH_JUDGEMENT_SCHEMA, Checklist, FinalPrompt, QuestionBatch, RoughJudgement)
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
+
+
+@dataclass
+class QuestionStep:
+    questions: list[dict]
+    done: bool
+    reason: str
+    rough_detailed: bool | None  # the model's judgement of the rough prompt, kept for later batches
 
 
 class Coach:
@@ -57,36 +66,88 @@ class Coach:
 
     # ---------- questions ----------
 
+    def judge_rough(self, rough: str) -> bool:
+        """Was the rough prompt already detailed? Judged once per session, without the score."""
+        judgement = self._structured("judge", tag("rough_prompt", rough), "rough_judgement",
+                                     ROUGH_JUDGEMENT_SCHEMA, RoughJudgement)
+        self.calls[-1].update(rough_prompt_detailed=judgement.detailed, stated=judgement.stated)
+        return judgement.detailed
+
     def next_questions(self, rough: str, score: int, target_key: str, qa: list[dict],
-                       batch_size: int | None = None) -> tuple[list[dict], bool, str]:
-        """Return (new questions, interview_done, done_reason)."""
+                       rough_detailed: bool | None = None, batch_size: int | None = None) -> QuestionStep:
+        """Ask for the next batch. rough_detailed is the judgement from the first batch (None before it).
+
+        The score's minimum is enforced only when the rough prompt was judged vague; a detailed
+        rough prompt may stop early once nothing useful is left to ask.
+        """
         band = band_for(score)
         remaining = band["max_questions"] - len(qa)
         if remaining <= 0:
-            return [], True, "question budget for this score is used up"
+            return QuestionStep([], True, "question budget for this score is used up", rough_detailed)
         n = min(batch_size or load_config()["interview"]["batch_size"], remaining)
-        user = "\n\n".join([
-            settings_block({
-                "detail_score": f"{score} of 10",
-                "target_ai": target_for(target_key)["label"],
-                "questions_asked_so_far": len(qa),
-                "batch_maximum": n,
-                "overall_minimum": band["min_questions"],
-                "overall_maximum": band["max_questions"],
-            }),
-            tag("rough_prompt", rough),
-            tag("interview_so_far", interview_text(qa)),
-        ])
-        batch = self._structured("questions", user, "question_batch", QUESTION_BATCH_SCHEMA, QuestionBatch)
-        asked = {item["question"].strip().lower() for item in qa}
-        questions = []
-        for q in batch.questions:
-            if q.text.strip().lower() in asked or len(questions) >= n:
-                continue
-            asked.add(q.text.strip().lower())
-            questions.append({"id": uuid.uuid4().hex[:8], **q.model_dump()})
-        done = batch.done or not questions or len(qa) + len(questions) >= band["max_questions"]
-        return questions, done, batch.done_reason
+        detailed = rough_detailed if rough_detailed is not None else self.judge_rough(rough)
+
+        def ask(push: str = "") -> QuestionBatch:
+            still_needed = 0 if detailed else max(0, band["min_questions"] - len(qa))
+            parts = [
+                settings_block({
+                    "detail_score": f"{score} of 10",
+                    "target_ai": target_for(target_key)["label"],
+                    "questions_asked_so_far": len(qa),
+                    "batch_maximum": n,
+                    "overall_minimum": band["min_questions"],
+                    "overall_maximum": band["max_questions"],
+                    "rough_prompt_detailed": str(detailed).lower(),
+                    "minimum_enforced": "yes" if still_needed else "no",
+                    "questions_still_needed_for_minimum": still_needed,
+                    "required_features": features_for(score),
+                }),
+                tag("rough_prompt", rough),
+                tag("interview_so_far", interview_text(qa)),
+            ]
+            if push:
+                parts.append(push)
+            batch = self._structured("questions", "\n\n".join(parts), "question_batch",
+                                     QUESTION_BATCH_SCHEMA, QuestionBatch)
+            self.calls[-1]["open_gaps"] = batch.open_gaps
+            return batch
+
+        def new_questions(batch: QuestionBatch) -> list[dict]:
+            asked = {item["question"].strip().lower() for item in qa}
+            out = []
+            for q in batch.questions:
+                if q.text.strip().lower() in asked or len(out) >= n:
+                    continue
+                asked.add(q.text.strip().lower())
+                out.append({"id": uuid.uuid4().hex[:8], **q.model_dump()})
+            return out
+
+        batch = ask()
+        has_gaps = any(g.strip() for g in batch.open_gaps)
+        questions = new_questions(batch) if (has_gaps or not detailed) else []
+        below_min = len(qa) + len(questions) < band["min_questions"]
+
+        if not detailed and below_min and len(questions) < n:
+            # The model wanted to stop, but a vague rough prompt must reach the minimum: ask once more.
+            still_needed = band["min_questions"] - len(qa) - len(questions)
+            push = ("<minimum_not_reached>\nThe rough prompt was judged vague, so this interview must reach "
+                    f"the overall minimum. Return {min(n, still_needed + len(questions))} questions in total for "
+                    "this batch by going deeper at this score's level (success criteria, edge cases and things "
+                    "to avoid, task-specific details), without rewording any earlier question.\n"
+                    "</minimum_not_reached>")
+            retry = new_questions(ask(push))
+            if len(retry) > len(questions):
+                questions = retry
+            below_min = len(qa) + len(questions) < band["min_questions"]
+
+        total = len(qa) + len(questions)
+        if not questions or total >= band["max_questions"]:
+            done = True
+        elif not detailed and below_min:
+            done = False
+        else:
+            done = batch.done or not has_gaps
+        return QuestionStep(questions, done, batch.done_reason, detailed)
 
     # ---------- final prompt ----------
 
@@ -169,9 +230,11 @@ def run_headless(coach: Coach, rough: str, score: int, target_key: str, answer_f
     """Run a full session without the UI. answer_fn(question) -> (status, answer)."""
     qa = list(qa or [])
     done = band_for(score)["max_questions"] <= len(qa)
+    rough_detailed = None
     while not done:
-        questions, done, _ = coach.next_questions(rough, score, target_key, qa)
-        for q in questions:
+        step = coach.next_questions(rough, score, target_key, qa, rough_detailed)
+        done, rough_detailed = step.done, step.rough_detailed
+        for q in step.questions:
             status, answer = answer_fn(q)
             qa.append({"id": q["id"], "category": q["category"], "question": q["text"],
                        "type": q["type"], "options": q["options"], "status": status, "answer": answer})

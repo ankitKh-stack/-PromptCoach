@@ -24,7 +24,7 @@ def reset():
 def init_state():
     defaults = {"stage": "input", "questions": [], "answers": {}, "idx": 0, "interview_done": False,
                 "result": None, "error": None, "visit": 0, "return_to_review": False,
-                "session_id": None, "parent_session_id": None}
+                "session_id": None, "parent_session_id": None, "rough_detailed": None}
     for key, value in defaults.items():
         ss.setdefault(key, value)
 
@@ -143,13 +143,13 @@ def interview_screen():
             go("review")
         with st.spinner("Thinking about what to ask next…"):
             try:
-                new, done, _ = ss.coach.next_questions(ss.rough, ss.score, ss.target, qa_list())
+                step = ss.coach.next_questions(ss.rough, ss.score, ss.target, qa_list(), ss.rough_detailed)
             except CoachError as exc:
                 ss.error = str(exc)
                 st.rerun()
-        ss.questions.extend(new)
-        ss.interview_done = done
-        if not new:
+        ss.questions.extend(step.questions)
+        ss.interview_done, ss.rough_detailed = step.done, step.rough_detailed
+        if not step.questions:
             go("review")
         st.rerun()
 
