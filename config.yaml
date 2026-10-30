@@ -1,0 +1,122 @@
+# Prompt Coach configuration. The active provider is chosen by PROVIDER in .env.
+
+providers:
+  deepseek:
+    # Official ID from https://api-docs.deepseek.com (served by DeepSeek-V4.1-Flash).
+    # Thinking is disabled per request so it behaves as the chat model.
+    model: deepseek-flash
+    base_url: https://api.deepseek.com
+    max_tokens: 8000
+    api_key_env: DEEPSEEK_API_KEY
+  anthropic:
+    # Mid-tier model from https://platform.claude.com/docs/en/models/overview
+    model: claude-sonnet-5-5
+    max_tokens: 16000
+    api_key_env: ANTHROPIC_API_KEY
+  openai:
+    # Mid-tier model from https://developers.openai.com/api/docs/models
+    model: gpt-6.1-sol
+    max_tokens: 16000
+    api_key_env: OPENAI_API_KEY
+
+request:
+  timeout_seconds: 180
+  # Retries for transient errors (rate limits, server errors, timeouts).
+  transient_retries: 4
+  backoff_base_seconds: 2
+
+interview:
+  batch_size: 5
+  # Above this many characters of pasted material the UI shows a warning (input is still sent).
+  input_warn_chars: 50000
+
+# Score bands. min/max = follow-up question range; features = what the final prompt must add.
+# Features are cumulative: each band includes every feature of the bands below it.
+score_bands:
+  - scores: [1]
+    min_questions: 0
+    max_questions: 0
+    description: "No questions. I'll clean up your prompt and mark missing pieces as placeholders."
+    features:
+      - "Rewrite for clarity as one clear task."
+      - "Flag obvious missing pieces as placeholders in the form [LABEL: short hint]."
+  - scores: [2, 3]
+    min_questions: 1
+    max_questions: 3
+    description: "A few quick questions about your goal and who it's for."
+    features:
+      - "State the goal (what result is wanted and what it is for)."
+      - "State the audience and their expertise."
+  - scores: [4, 5]
+    min_questions: 4
+    max_questions: 7
+    description: "Several questions to add background, length and tone limits, and the output format."
+    features:
+      - "Include the context and source material the AI cannot know."
+      - "Set checkable length, scope and tone constraints."
+      - "Specify the output format."
+  - scores: [6, 7]
+    min_questions: 8
+    max_questions: 12
+    description: "A proper interview: adds success criteria, a rule for missing info, and clear sections."
+    features:
+      - "State 2-4 checkable success criteria in their own clearly labelled section (for example 'Success criteria' or 'What a good answer looks like'), so the reader can see what the answer is judged on."
+      - "Include a rule for missing information and for out-of-scope requests, in a clearly labelled section (for example 'If information is missing')."
+      - "Structure the prompt with clearly separated sections."
+  - scores: [8, 9]
+    min_questions: 13
+    max_questions: 17
+    description: "A detailed interview: adds edge cases, examples where useful, and tuning for your chosen AI."
+    features:
+      - "Cover edge cases and things to avoid, each with its reason."
+      - "Add examples only if they help; keep them consistent with the instructions."
+      - "Apply the target-AI-specific adjustments."
+  - scores: [10]
+    min_questions: 18
+    max_questions: 22
+    description: "The full interview (about 20 questions) for a complete, detailed specification."
+    features:
+      - "Write a full specification covering everything above."
+      - "Add verification steps the AI should run on its own answer before replying."
+      - "If the prompt includes long material, restate the task at the end."
+
+targets:
+  - key: chatgpt
+    label: "ChatGPT / OpenAI"
+    reasoning: true
+  - key: claude
+    label: "Claude"
+    reasoning: true
+  - key: gemini
+    label: "Gemini"
+    reasoning: true
+  - key: other
+    label: "Other / any"
+    reasoning: false
+
+# Code-level checks on every final prompt (in addition to the LLM checklist).
+lint:
+  # Matched case-sensitively, as whole words, outside [PLACEHOLDER: ...] brackets.
+  caps_emphasis_words: [CRITICAL, IMPORTANT, MUST, NEVER, ALWAYS, "DO NOT", "DON'T", NOT, ESSENTIAL,
+                        MANDATORY, REQUIRED, ABSOLUTELY, ONLY, VERY, WARNING, STRICTLY]
+  # Matched case-insensitively as regular expressions.
+  tip_threat_patterns:
+    - "\\btip (you|of)\\b"
+    - "\\$\\d+\\s*tip"
+    - "\\bi'?ll (tip|pay) you\\b"
+    - "\\b(penali[sz]ed|punished|fired)\\b"
+    - "\\bmy (job|career|life) depends\\b"
+    - "\\blives? (depend|are at stake)"
+    - "\\btake a deep breath\\b"
+    - "\\bgrandm(a|other)\\b.*\\b(used to|would)\\b"
+    - "\\bworld[- ]class\\b"
+    - "\\bworld'?s (best|leading|top)\\b"
+  step_by_step_patterns:
+    - "\\bthink(ing)? (this |it )?(through )?step[- ]by[- ]step\\b"
+    - "\\blet'?s (think|work|reason)[^.\\n]{0,20}step[- ]by[- ]step\\b"
+    - "\\breason step[- ]by[- ]step\\b"
+
+paths:
+  knowledge: knowledge/prompting_rules.md
+  prompts_dir: prompts
+  log_file: logs/sessions.jsonl
