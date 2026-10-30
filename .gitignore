@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 logs/
 evals/results*.jsonl
+prompt-coach-claude-code-prompt.md
